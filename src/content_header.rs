@@ -1,10 +1,11 @@
 use lazy_static::lazy_static;
 use regex::Regex;
+use std::borrow::Cow::{Borrowed, Owned};
 use std::borrow::{Borrow, Cow};
 use std::collections::HashMap;
 
 lazy_static! {
-    static ref PARENTHESES_RE: Regex = Regex::new(r#"\s*"\s*"#).unwrap();
+    static ref PARENTHESES_RE: Regex = Regex::new(r#"^("|')|("|')$"#).unwrap();
     static ref ESCAPE_RE: Regex = Regex::new(r#"\\"\s*"#).unwrap();
 }
 
@@ -14,23 +15,30 @@ fn unescape(value: &str) -> Cow<str> {
 }
 
 #[inline]
-fn trim_parentheses(value: &str) -> Cow<str> {
+fn unquote(value: &str) -> Cow<str> {
     PARENTHESES_RE.replace_all(value, "")
+}
+
+#[inline]
+fn normalize_value(value: &str) -> String {
+    match unquote(value.trim()) {
+        Borrowed(v) => v.to_owned(),
+        Owned(v) => v,
+    }
 }
 
 pub fn parse_content_header(header: &str) -> (String, HashMap<String, String>) {
     let unescaped = unescape(header);
-    let normalized_header = trim_parentheses(unescaped.borrow());
+    let normalized_header = unquote(unescaped.borrow());
     match normalized_header.split_once("; ") {
-        Some(split_result) => {
-            let (header_value, options_str) = split_result;
+        Some((header_value, options_str)) => {
             let options = HashMap::from_iter(
                 options_str
                     .split("; ")
                     .filter_map(|value| value.split_once('='))
-                    .map(|value| (value.0.trim().to_owned(), value.1.trim().to_owned())),
+                    .map(|(key, value)| (normalize_value(key), normalize_value(value))),
             );
-            return (header_value.trim().to_owned(), options);
+            (normalize_value(header_value), options)
         }
         None => (String::from(""), HashMap::new()),
     }
@@ -48,17 +56,22 @@ mod tests {
     }
 
     #[test]
-    fn test_trim_parentheses() {
-        assert_eq!("", trim_parentheses("\"    "));
-        assert_eq!("", trim_parentheses("      \"    "));
-        assert_eq!("", trim_parentheses("\"\""));
-        assert_eq!("", trim_parentheses("\""));
+    fn test_unquote() {
+        assert_eq!("abc", unquote("\"abc\""));
+        assert_eq!("abc", unquote("'abc'"));
+        assert_eq!("abc", unquote("'abc"));
+        assert_eq!("abc", unquote("abc'"));
+        assert_eq!("abc", unquote("\"abc"));
+        assert_eq!("abc", unquote("abc\""));
+        assert_eq!("a''b", unquote("a''b"));
+        assert_eq!("a\"\"b", unquote("a\"\"b"));
     }
 
     #[test]
     fn test_parse_content_header_regular_header() {
-        let (header_value, options) =
-            parse_content_header(r#"form-data; name="attributes"; filename="test-attribute_5.tsv"#);
+        let (header_value, options) = parse_content_header(
+            "form-data; name=\"attributes\"; filename=\"test-attribute_5.tsv\"",
+        );
 
         assert_eq!(header_value, String::from("form-data"));
         assert_eq!(
@@ -129,7 +142,7 @@ mod tests {
 
     #[test]
     fn test_parse_content_header_quoted() {
-        let (header_value, options) = parse_content_header(r#"form-data; name="my;f;ield""#);
+        let (header_value, options) = parse_content_header("form-data; name=\"my;f;ield");
 
         assert_eq!(header_value, String::from("form-data"));
         assert_eq!(
