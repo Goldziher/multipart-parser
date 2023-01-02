@@ -64,4 +64,4 @@ used in tests and benchmarks.
 
 ### Benchmarking
 
-Benchmarks use pyperf. To execute them run `poetry run python benchrmarks/main.py`.
+Benchmarks use pyperf. To execute them run `poetry run python benchrmarks.py`.
