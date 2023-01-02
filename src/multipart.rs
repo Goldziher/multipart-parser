@@ -5,14 +5,12 @@ use percent_encoding::percent_decode;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use pythonize::pythonize;
-use regex::Regex;
+use regex::bytes::Regex;
 use serde_json::Value;
-use std::borrow::Cow::{Borrowed, Owned};
 use std::collections::HashMap;
 
 lazy_static! {
-    static ref CRLF_SANITIZATION_REGEX: Regex = Regex::new(r"(^\r\n|\r\n$)").unwrap();
-    static ref BOUNDARY_SANITIZE_REGEX: Regex = Regex::new(r"(^-*|-*$)").unwrap();
+    static ref CONTENT_SEPARATION_REGEX: Regex = Regex::new(r"\r\n\r\n").unwrap();
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -20,7 +18,7 @@ pub struct UploadFile {
     content_type: String,
     filename: String,
     headers: HashMap<String, String>,
-    content: String,
+    content: Vec<u8>,
 }
 
 impl IntoPy<PyObject> for UploadFile {
@@ -35,11 +33,8 @@ impl IntoPy<PyObject> for UploadFile {
             .unwrap();
         dict.set_item::<PyObject, PyObject>("filename".into_py(py), self.filename.into_py(py))
             .unwrap();
-        dict.set_item::<PyObject, PyObject>(
-            "content".into_py(py),
-            self.content.as_str().as_bytes().into_py(py),
-        )
-        .unwrap();
+        dict.set_item::<PyObject, PyObject>("content".into_py(py), self.content.into_py(py))
+            .unwrap();
         dict.into_py(py)
     }
 }
@@ -111,7 +106,7 @@ impl IntoPy<PyObject> for Field {
 }
 
 #[inline]
-fn extract_filename(options: HashMap<String, String>) -> String {
+fn extract_filename(options: HashMap<String, String>) -> Option<String> {
     match options.get("filename*") {
         Some(filename_with_asterisk) => {
             let mut parts = filename_with_asterisk.splitn(3, '\'');
@@ -123,27 +118,21 @@ fn extract_filename(options: HashMap<String, String>) -> String {
             // we have no use for the language component - if its sent.
             parts.next();
 
-            let encoded_filename = match parts.next() {
-                None => "",
-                Some(filename) => filename,
-            };
+            match parts.next() {
+                None => None,
+                Some(filename) => {
+                    let percent_decoded: Vec<u8> =
+                        percent_decode(filename.as_bytes()).collect::<Vec<u8>>();
 
-            let percent_decoded: Vec<u8> =
-                percent_decode(encoded_filename.as_bytes()).collect::<Vec<u8>>();
+                    let (decoded, ..) = Encoding::for_label(charset.as_bytes())
+                        .unwrap_or(UTF_8)
+                        .decode(percent_decoded.as_slice());
 
-            let (decoded, ..) = Encoding::for_label(charset.as_bytes())
-                .unwrap_or(UTF_8)
-                .decode(percent_decoded.as_slice());
-
-            match decoded {
-                Borrowed(value) => value.to_owned(),
-                Owned(value) => value,
+                    Some(decoded.to_string())
+                }
             }
         }
-        None => match options.get("filename") {
-            None => String::from(""),
-            Some(filename) => filename.to_string(),
-        },
+        None => options.get("filename").cloned(),
     }
 }
 
@@ -152,94 +141,101 @@ pub fn parse_multipart_form_data(
     boundary: &[u8],
     charset: &[u8],
 ) -> HashMap<String, Field> {
+    let boundary_re =
+        Regex::new(format!(r"-*({})-*", String::from_utf8(boundary.to_vec()).unwrap()).as_str())
+            .unwrap();
+
     let mut result: HashMap<String, Field> = HashMap::new();
-
     let encoding = Encoding::for_label(charset).unwrap_or(UTF_8);
-    let (string_body, ..) = encoding.decode(body);
-    let (string_boundary, ..) = encoding.decode(boundary);
 
-    for form_part in string_body
-        .split(string_boundary.as_ref())
-        .map(|el| BOUNDARY_SANITIZE_REGEX.replace_all(el, ""))
-        .filter(|el| !el.is_empty())
-    {
-        let mut filename: String = "".to_owned();
-        let mut field_name: String = "".to_owned();
+    for form_part in boundary_re.split(body) {
+        let mut filename: Option<String> = None;
+        let mut field_name: Option<String> = None;
         let mut headers: Vec<(String, String)> = Vec::new();
-        let mut content_type: String = "text/plain".to_owned();
+        let mut content_type = String::from("text/plain");
 
-        match form_part.split_once("\r\n\r\n") {
+        let mut parts = CONTENT_SEPARATION_REGEX.split(form_part);
+
+        match parts.next() {
             None => continue,
-            Some((headers_value, content_value)) => {
+            Some(headers_bs) => {
+                let headers_value = String::from_utf8(headers_bs.to_vec()).unwrap_or_default();
+
                 if headers_value.contains(':') {
                     for (header_key, header_value) in headers_value
                         .split("\r\n")
                         .filter_map(|part| part.split_once(':'))
-                        .map(|(key, value)| (key.to_lowercase(), value.trim().to_owned()))
+                        .map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))
                     {
                         if header_key.to_lowercase() == "content-type" {
-                            content_type = header_value.clone();
+                            content_type = header_value.to_string();
                         }
 
                         if header_key.to_lowercase() == "content-disposition" {
                             let (value, options) =
                                 parse_content_header(header_value.as_str()).to_owned();
 
-                            field_name = match options.get("name") {
-                                None => String::from(""),
-                                Some(value) => value.to_string(),
-                            };
+                            field_name = options.get("name").cloned();
                             filename = extract_filename(options);
 
                             headers.push((header_key.to_owned(), value));
                         } else {
-                            headers.push((header_key.to_owned(), header_value));
-                        }
-                    }
-                }
-
-                if !field_name.is_empty() {
-                    let post_data = match CRLF_SANITIZATION_REGEX.replace_all(content_value, "") {
-                        Borrowed(result) => result.to_owned(),
-                        Owned(result) => result,
-                    };
-
-                    if !filename.is_empty() {
-                        result.insert(
-                            field_name.to_owned(),
-                            Field::File(UploadFile {
-                                content_type: content_type.to_owned(),
-                                filename: filename.to_owned(),
-                                headers: HashMap::from_iter(headers),
-                                content: post_data,
-                            }),
-                        );
-                    } else {
-                        match serde_json::from_str(post_data.as_str()) {
-                            Ok(json_value) => {
-                                result.insert(
-                                    field_name.to_owned(),
-                                    Field::Json(JsonField {
-                                        content_type: content_type.to_owned(),
-                                        headers: HashMap::from_iter(headers),
-                                        content: json_value,
-                                    }),
-                                );
-                            }
-                            Err(_) => {
-                                result.insert(
-                                    field_name.to_owned(),
-                                    Field::String(StringField {
-                                        content_type: content_type.to_owned(),
-                                        headers: HashMap::from_iter(headers),
-                                        content: post_data,
-                                    }),
-                                );
-                            }
+                            headers.push((header_key.to_owned(), header_value.to_owned()));
                         }
                     }
                 }
             }
+        }
+
+        match field_name {
+            None => continue,
+            Some(name) => match parts.next() {
+                None => continue,
+                Some(mut content_bs) => {
+                    content_bs = match content_bs.strip_suffix(b"\r\n") {
+                        None => content_bs,
+                        Some(stripped) => stripped,
+                    };
+
+                    match filename {
+                        Some(file_name) => {
+                            result.insert(
+                                name.to_string(),
+                                Field::File(UploadFile {
+                                    content_type: content_type.to_owned(),
+                                    filename: file_name.to_string(),
+                                    headers: HashMap::from_iter(headers),
+                                    content: content_bs.to_vec(),
+                                }),
+                            );
+                        }
+                        None => match serde_json::from_slice::<Value>(content_bs) {
+                            Ok(json_value) => {
+                                result.insert(
+                                    name.to_string(),
+                                    Field::Json(JsonField {
+                                        content_type: content_type.to_owned(),
+                                        headers: HashMap::from_iter(headers),
+                                        content: json_value.to_owned(),
+                                    }),
+                                );
+                            }
+                            Err(_) => {
+                                let (decoded, ..) = encoding.decode(content_bs);
+
+                                result.insert(
+                                    name.to_string(),
+                                    Field::String(StringField {
+                                        content_type: content_type.to_owned(),
+                                        headers: HashMap::from_iter(headers),
+                                        content: decoded.to_string(),
+                                    }),
+                                );
+                            }
+                        },
+                    }
+                }
+            },
         }
     }
 
@@ -249,6 +245,10 @@ pub fn parse_multipart_form_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn comp_as_string(val: Vec<u8>) -> String {
+        String::from_utf8(val).unwrap()
+    }
 
     #[test]
     fn test_parse_postman_multipart() {
@@ -263,7 +263,7 @@ mod tests {
         assert_eq!(attributes.content_type, "text/tab-separated-values");
         assert_eq!(attributes.filename, "test-attribute_5.tsv");
         assert_eq!(
-            attributes.content,
+            comp_as_string(attributes.content.clone()),
             "\"Campaign ID\"\t\"Plate Set ID\"\t\"No\"\n"
         );
 
@@ -274,8 +274,8 @@ mod tests {
         assert_eq!(fasta.content_type, "application/octet-stream");
         assert_eq!(fasta.filename, "test-sequence_correct_5.fasta");
         assert_eq!(
-            fasta.content,
-            ">P23G01_IgG1-1411:H:Q10C3:1/1:NID18\r\nCAGGTATTGAA\r\n"
+            comp_as_string(fasta.content.clone()),
+            ">P23G01_IgG1-1411:H:Q10C3:1/1:NID18\r\nCAGGTATTGAA"
         );
     }
 
@@ -305,7 +305,7 @@ mod tests {
 
         assert_eq!(file.content_type, "image/jpeg");
         assert_eq!(file.filename, "画像.jpg");
-        assert_eq!(file.content, "<file content>");
+        assert_eq!(comp_as_string(file.content.clone()), "<file content>");
     }
 
     #[test]
@@ -321,7 +321,7 @@ mod tests {
 
         assert_eq!(file.content_type, "image/jpeg");
         assert_eq!(file.filename, "Naïve file.jpg");
-        assert_eq!(file.content, "<file content>");
+        assert_eq!(comp_as_string(file.content.clone()), "<file content>");
     }
 
     #[test]
@@ -337,7 +337,7 @@ mod tests {
 
         assert_eq!(file.content_type, "image/jpeg");
         assert_eq!(file.filename, "Naïve file.jpg");
-        assert_eq!(file.content, "<file content>");
+        assert_eq!(comp_as_string(file.content.clone()), "<file content>");
     }
 
     #[test]
@@ -353,7 +353,7 @@ mod tests {
 
         assert_eq!(file.content_type, "text/plain");
         assert_eq!(file.filename, "file.txt");
-        assert_eq!(file.content, "<file content>");
+        assert_eq!(comp_as_string(file.content.clone()), "<file content>");
 
         let string_field_1 = match result.get("field0").unwrap() {
             Field::String(field) => field,

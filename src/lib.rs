@@ -1,3 +1,5 @@
+extern crate core;
+
 mod content_header;
 mod multipart;
 
@@ -15,10 +17,10 @@ fn parse_content_header(header: &str) -> PyResult<(String, HashMap<String, Strin
 
 #[pyfunction]
 #[pyo3(text_signature = "(body, boundary, charset, /)")]
-fn parse_multipart_form_data(
-    body: &[u8],
-    boundary: &[u8],
-    charset: &[u8],
+fn parse_multipart_form_data<'a>(
+    body: &'a [u8],
+    boundary: &'a [u8],
+    charset: &'a [u8],
 ) -> PyResult<HashMap<String, Field>> {
     Ok(_parse_multipart_form_data(body, boundary, charset))
 }
