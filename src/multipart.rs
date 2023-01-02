@@ -1,7 +1,10 @@
-use crate::parse_content_header;
+use crate::content_header::parse_content_header;
 use encoding_rs::{Encoding, UTF_8};
 use lazy_static::lazy_static;
 use percent_encoding::percent_decode;
+use pyo3::prelude::*;
+use pyo3::types::PyDict;
+use pythonize::pythonize;
 use regex::Regex;
 use serde_json::Value;
 use std::borrow::Cow::{Borrowed, Owned};
@@ -20,11 +23,51 @@ pub struct UploadFile {
     content: String,
 }
 
+impl IntoPy<PyObject> for UploadFile {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        let dict = PyDict::new(py);
+        dict.set_item::<PyObject, PyObject>(
+            "content_type".into_py(py),
+            self.content_type.into_py(py),
+        )
+        .unwrap();
+        dict.set_item::<PyObject, PyObject>("headers".into_py(py), self.headers.into_py(py))
+            .unwrap();
+        dict.set_item::<PyObject, PyObject>("filename".into_py(py), self.filename.into_py(py))
+            .unwrap();
+        dict.set_item::<PyObject, PyObject>(
+            "content".into_py(py),
+            self.content.as_str().as_bytes().into_py(py),
+        )
+        .unwrap();
+        dict.into_py(py)
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct JsonField {
     content_type: String,
     headers: HashMap<String, String>,
     content: Value,
+}
+
+impl IntoPy<PyObject> for JsonField {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        let dict = PyDict::new(py);
+        dict.set_item::<PyObject, PyObject>(
+            "content_type".into_py(py),
+            self.content_type.into_py(py),
+        )
+        .unwrap();
+        dict.set_item::<PyObject, PyObject>("headers".into_py(py), self.headers.into_py(py))
+            .unwrap();
+        dict.set_item::<PyObject, PyObject>(
+            "content".into_py(py),
+            pythonize(py, &self.content).unwrap(),
+        )
+        .unwrap();
+        dict.into_py(py)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -34,11 +77,37 @@ pub struct StringField {
     content: String,
 }
 
+impl IntoPy<PyObject> for StringField {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        let dict = PyDict::new(py);
+        dict.set_item::<PyObject, PyObject>(
+            "content_type".into_py(py),
+            self.content_type.into_py(py),
+        )
+        .unwrap();
+        dict.set_item::<PyObject, PyObject>("headers".into_py(py), self.headers.into_py(py))
+            .unwrap();
+        dict.set_item::<PyObject, PyObject>("content".into_py(py), self.content.into_py(py))
+            .unwrap();
+        dict.into_py(py)
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Field {
     File(UploadFile),
     Json(JsonField),
     String(StringField),
+}
+
+impl IntoPy<PyObject> for Field {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        match self {
+            Field::File(value) => value.into_py(py),
+            Field::Json(value) => value.into_py(py),
+            Field::String(value) => value.into_py(py),
+        }
+    }
 }
 
 #[inline]

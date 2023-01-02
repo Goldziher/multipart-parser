@@ -1,2 +1,8 @@
-/target
-/Cargo.lock
+target/
+dist/
+__pycache__/
+.pytest_cache/
+*.iml
+.idea
+*.profraw
+coverage*

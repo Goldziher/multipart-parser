@@ -1,0 +1,58 @@
+[tool.poetry]
+name = "fast-multipart-parser"
+version = "0.1.0"
+description = "Ultra fast multipart form-data parser written in Rust."
+authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [{include = "src"}]
+
+[project]
+name = "fast-multipart-parser"
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python",
+    "Programming Language :: Rust",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development",
+    "Typing :: Typed",
+]
+
+[tool.poetry.dependencies]
+python = ">=3.8"
+maturin = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+pyperf = "*"
+werkzeug = "^2.2.2"
+
+[build-system]
+requires = ["maturin>=0.13,<0.14"]
+build-backend = "maturin"
+
+[tool.black]
+line-length = 120
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+
+[tool.pycln]
+all = true
+
+[tool.maturin]
+sdist-include = ["Cargo.lock"]
+strip = true

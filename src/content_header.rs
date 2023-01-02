@@ -40,13 +40,14 @@ pub fn parse_content_header(header: &str) -> (String, HashMap<String, String>) {
             );
             (normalize_value(header_value), options)
         }
-        None => (String::from(""), HashMap::new()),
+        None => (String::from(""), HashMap::default()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_unescape() {
@@ -76,7 +77,7 @@ mod tests {
         assert_eq!(header_value, String::from("form-data"));
         assert_eq!(
             options,
-            HashMap::from([
+            HashMap::from_iter([
                 (String::from("name"), String::from("attributes")),
                 (
                     String::from("filename"),
